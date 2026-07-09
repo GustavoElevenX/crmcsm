@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
-import { createLead, findActiveLeadsByPhone, updateLeadDetails, type PossibleDuplicateLead } from '../lib/crm';
+import { createLead, findActiveLeadsByPhone, normalizePhoneForStorage, updateLeadDetails, type PossibleDuplicateLead } from '../lib/crm';
 import { LEAD_ORIGINS, type Lead, type LeadOrigin } from '../types';
 
 export function LeadForm({ onClose, onSaved, onOpenExisting, lead }: { onClose: () => void; onSaved: () => void; onOpenExisting?: (leadId: string) => void; lead?: Lead }) {
@@ -34,11 +34,11 @@ export function LeadForm({ onClose, onSaved, onOpenExisting, lead }: { onClose: 
       Object.entries(rawValues).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value]),
     );
     const errors: Record<string, string> = {};
-    const phoneDigits = String(values.telefone || '').replace(/\D/g, '');
+    const phoneDigits = normalizePhoneForStorage(String(values.telefone || ''));
 
     if (!values.nome_responsavel) errors.nome_responsavel = 'Informe o nome do responsável.';
     if (!values.empresa) errors.empresa = 'Informe a empresa ou estabelecimento.';
-    if (phoneDigits.length < 10 || phoneDigits.length > 13) {
+    if (phoneDigits.length < 10 || phoneDigits.length > 11) {
       errors.telefone = 'Informe um telefone válido com DDD.';
     }
     if (values.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(values.email))) {

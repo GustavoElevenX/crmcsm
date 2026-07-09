@@ -25,6 +25,7 @@ Crie todos os usuários em **Supabase > Authentication > Users**. Um usuário cr
    - `supabase/migrations/202607090002_fix_followup_dates.sql`
    - `supabase/migrations/202607090003_unique_meta_leads.sql`
    - `supabase/migrations/202607090004_normalize_initial_followups.sql`
+   - `supabase/migrations/202607090005_normalize_phone_storage.sql`
 
 4. Em **Authentication > Users**, crie o primeiro usuário com e-mail e senha.
 5. Copie `.env.example` para `.env` e preencha as credenciais públicas do projeto:

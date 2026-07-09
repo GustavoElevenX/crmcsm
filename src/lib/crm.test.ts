@@ -8,6 +8,7 @@ import {
   BUSINESS_FOLLOWUP_HOUR, findActiveLeadsByPhone, formatPhoneForWhatsApp, getAlertStatus,
   getFinalCadenceChanges, getFollowupLabel, getPostDegustationChanges, getPostProposalChanges,
   getStageSlugAfterContact, hasAutomaticFollowup, nextCommercialFollowupDate, normalizePhone,
+  normalizePhoneForStorage,
 } from './crm';
 import type { Lead } from '../types';
 
@@ -68,6 +69,19 @@ describe('alertas comerciais', () => {
     }))).toBe('atrasado');
   });
 
+  it('mantém em dia um lead com follow-up futuro mesmo sem movimento há mais de três dias', () => {
+    const future = new Date();
+    future.setDate(future.getDate() + 7);
+    const oldMovement = new Date();
+    oldMovement.setDate(oldMovement.getDate() - 4);
+    expect(getAlertStatus(makeLead({
+      crm_stages: { id: 'manual', name: 'Degustação agendada', slug: 'degustacao_agendada', position: 5, is_final: false },
+      etapa_cadencia: 'manual',
+      proximo_followup_em: future.toISOString(),
+      ultimo_movimento_em: oldMovement.toISOString(),
+    }))).toBe('em_dia');
+  });
+
   it('não gera pendência em etapa final', () => {
     expect(getAlertStatus(makeLead({
       etapa_cadencia: 'encerrado',
@@ -79,6 +93,11 @@ describe('alertas comerciais', () => {
 describe('helpers operacionais', () => {
   it('formata telefone brasileiro para WhatsApp', () => {
     expect(formatPhoneForWhatsApp('(98) 99999-9999')).toBe('5598999999999');
+  });
+
+  it('salva telefones com e sem +55 no mesmo formato nacional', () => {
+    expect(normalizePhoneForStorage('+55 98 99999-9999')).toBe('98999999999');
+    expect(normalizePhoneForStorage('98 99999-9999')).toBe('98999999999');
   });
 
   it('exibe o follow-up atual de forma clara', () => {
@@ -132,7 +151,7 @@ describe('helpers operacionais', () => {
       error: null,
     });
     fromMock.mockReturnValue({ select: vi.fn().mockReturnValue(query) });
-    const result = await findActiveLeadsByPhone('(98) 99999-9999');
+    const result = await findActiveLeadsByPhone('+55 (98) 99999-9999');
     expect(normalizePhone('(98) 99999-9999')).toBe('98999999999');
     expect(query.eq).toHaveBeenCalledWith('telefone', '98999999999');
     expect(result).toHaveLength(1);

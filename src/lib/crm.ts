@@ -19,6 +19,14 @@ export function normalizePhone(phone: string) {
   return phone.replace(/\D/g, '');
 }
 
+export function normalizePhoneForStorage(phone: string) {
+  const digits = normalizePhone(phone);
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
+    return digits.slice(2);
+  }
+  return digits;
+}
+
 export function getFinalCadenceChanges() {
   return { etapa_cadencia: 'encerrado' as const, proximo_followup_em: null };
 }
@@ -137,13 +145,16 @@ export function getAlertStatus(lead: Lead): AlertStatus {
     if (differenceInHours(now, createdAt) >= 2) return 'novo_lead_parado';
     return 'hoje';
   }
-  if (nextDay && isBefore(nextDay, todayStart)) return 'atrasado';
+  if (nextDay) {
+    if (isBefore(nextDay, todayStart)) return 'atrasado';
+    if (isSameDay(nextDay, todayStart)) return 'hoje';
+    return 'em_dia';
+  }
   if (lead.crm_stages?.slug === 'proposta_enviada' && lead.proposta_enviada_em && isBefore(new Date(lead.proposta_enviada_em), subDays(now, 3))) {
     const hasLaterInteraction = lead.lead_interactions?.some((item) => item.type !== 'proposta' && new Date(item.created_at) > new Date(lead.proposta_enviada_em!));
     if (!hasLaterInteraction) return 'proposta_sem_retorno';
   }
   if (lead.ultimo_movimento_em && isBefore(new Date(lead.ultimo_movimento_em), subDays(now, 3))) return 'lead_parado';
-  if (next && isSameDay(next, now)) return 'hoje';
   return 'em_dia';
 }
 
@@ -246,7 +257,7 @@ export async function scheduleDegustation(leadId: string, date: Date, externalSe
   const stage = await getStage('degustacao_agendada');
   await updateLead(leadId, {
     stage_id: stage.id, status: stage.name, degustacao_agendada_em: date.toISOString(),
-    vendedor_externo: externalSeller || null, etapa_cadencia: 'manual', proximo_followup_em: null,
+    vendedor_externo: externalSeller || null, etapa_cadencia: 'manual', proximo_followup_em: date.toISOString(),
   });
   const details = [externalSeller ? `Vendedor: ${externalSeller}` : '', note || ''].filter(Boolean).join(' · ');
   await addInteraction(leadId, 'degustacao', 'internal', `Degustação agendada para ${date.toLocaleString('pt-BR')}${details ? ` · ${details}` : ''}`);
@@ -303,7 +314,7 @@ export type PossibleDuplicateLead = {
 };
 
 export async function findActiveLeadsByPhone(phone: string): Promise<PossibleDuplicateLead[]> {
-  const phoneDigits = normalizePhone(phone);
+  const phoneDigits = normalizePhoneForStorage(phone);
   if (phoneDigits.length < 10) return [];
   const { data, error } = await supabase
     .from('leads')
@@ -325,6 +336,9 @@ export async function createLead(payload: Record<string, unknown>) {
   const sanitizedPayload = Object.fromEntries(
     Object.entries(payload).map(([key, value]) => [key, typeof value === 'string' ? value.trim() || null : value]),
   );
+  if (sanitizedPayload.telefone) {
+    sanitizedPayload.telefone = normalizePhoneForStorage(String(sanitizedPayload.telefone));
+  }
   if (sanitizedPayload.meta_lead_id) {
     const { data: duplicate, error: duplicateError } = await supabase
       .from('leads')
@@ -349,8 +363,8 @@ export async function createLead(payload: Record<string, unknown>) {
 }
 
 export async function updateLeadDetails(leadId: string, payload: Record<string, unknown>) {
-  const phone = normalizePhone(String(payload.telefone || ''));
-  if (phone.length < 10 || phone.length > 13) throw new Error('Informe um telefone válido com DDD.');
+  const phone = normalizePhoneForStorage(String(payload.telefone || ''));
+  if (phone.length < 10 || phone.length > 11) throw new Error('Informe um telefone válido com DDD.');
   const email = String(payload.email || '').trim();
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Informe um e-mail válido.');
 
