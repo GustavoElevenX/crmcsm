@@ -1,0 +1,32 @@
+import { format } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
+import type { AlertStatus, Lead } from '../types';
+import { getAlertStatus } from '../lib/crm';
+
+export const ALERT_LABELS: Record<AlertStatus, string> = {
+  atrasado: 'Atrasado', novo_lead_parado: 'Novo lead parado', proposta_sem_retorno: 'Proposta sem retorno',
+  lead_parado: 'Lead parado', hoje: 'Hoje', em_dia: 'Em dia',
+};
+
+export function AlertBadge({ lead }: { lead: Lead }) {
+  const status = getAlertStatus(lead);
+  return <span className={`badge alert-${status}`}>{ALERT_LABELS[status]}</span>;
+}
+
+export function Temperature({ value }: { value: Lead['temperatura'] }) {
+  return <span className={`temperature ${value}`}><i />{value[0].toUpperCase() + value.slice(1)}</span>;
+}
+
+export function DateText({ value, withTime = false }: { value?: string | null; withTime?: boolean }) {
+  if (!value) return <span className="muted">—</span>;
+  return <>{format(new Date(value), withTime ? "dd/MM/yyyy 'às' HH:mm" : 'dd/MM/yyyy', { locale: ptBR })}</>;
+}
+
+export function OriginLabel({ origin }: { origin: Lead['origem'] }) {
+  const labels: Record<string, string> = {
+    'Trafego Pago - Formulario Meta Ads': 'Tráfego pago', 'Link da Bio': 'Link da bio',
+    'Instagram Direct': 'Instagram', 'WhatsApp Organico': 'WhatsApp', Indicacao: 'Indicação',
+    'Prospecao Ativa': 'Prospecção', 'Cliente Antigo': 'Cliente antigo', Outro: 'Outro',
+  };
+  return <span className="origin-label">{labels[origin] || origin}</span>;
+}
