@@ -10,7 +10,7 @@ import { ptBR } from 'date-fns/locale';
 import { supabase } from './lib/supabase';
 import {
   getAlertStatus, getFollowupLabel, getOperationalStageLabel, getOperationalStageSlug, getWhatsAppUrl,
-  markDegustationDone, markLeadResponded, moveLeadToStage,
+  isFirstContactPending, markContactSent, markDegustationDone, markLeadResponded, moveLeadToStage,
 } from './lib/crm';
 import type { Lead, Profile, Stage, View } from './types';
 import { Login } from './components/Login';
@@ -83,7 +83,7 @@ export default function App() {
         <div className="content">
           {loadError && <div className="notice error">Não foi possível carregar os dados. Atualize a página e tente novamente.</div>}
           {loading ? <div className="skeleton-page"><div /><div /><div /></div> :
-            <Page view={view} leads={leads} stages={stages} onOpen={setSelected} onChanged={loadData} />}
+            <Page view={view} leads={leads} stages={stages} currentUser={profile} onOpen={setSelected} onChanged={loadData} />}
         </div>
       </main>
       {formOpen && <LeadForm onClose={() => setFormOpen(false)} onSaved={loadData} onOpenExisting={(leadId) => setSelected(leads.find((lead) => lead.id === leadId) || null)} />}
@@ -92,9 +92,9 @@ export default function App() {
   );
 }
 
-function Page(props: { view: View; leads: Lead[]; stages: Stage[]; onOpen: (lead: Lead) => void; onChanged: () => void }) {
+function Page(props: { view: View; leads: Lead[]; stages: Stage[]; currentUser?: Profile | null; onOpen: (lead: Lead) => void; onChanged: () => void }) {
   if (props.view === 'dashboard') return <Dashboard {...props} />;
-  if (props.view === 'kanban') return <Kanban {...props} />;
+  if (props.view === 'kanban') return <Kanban leads={props.leads} stages={props.stages} currentUser={props.currentUser} onOpen={props.onOpen} onChanged={props.onChanged} />;
   if (props.view === 'reports') return <Reports leads={props.leads} stages={props.stages} />;
   let title = '';
   let filtered = props.leads;
@@ -193,32 +193,75 @@ function LeadList({ leads, onOpen, onChanged, title, mode }: { leads: Lead[]; on
   </section>;
 }
 
-function Kanban({ leads, stages, onOpen, onChanged }: { leads: Lead[]; stages: Stage[]; onOpen: (lead: Lead) => void; onChanged: () => void }) {
+function Kanban({ leads, stages, currentUser, onOpen, onChanged }: { leads: Lead[]; stages: Stage[]; currentUser?: Profile | null; onOpen: (lead: Lead) => void; onChanged: () => void }) {
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
+  const [pendingFirstContact, setPendingFirstContact] = useState<Lead | null>(null);
+  const [dropError, setDropError] = useState('');
+  const [confirming, setConfirming] = useState(false);
+
   async function dragEnd(event: DragEndEvent) {
     const stageSlug = event.over?.id as string | undefined;
     if (!stageSlug) return;
     const leadId = String(event.active.id);
     const lead = leads.find((item) => item.id === leadId);
-    if (!lead || lead.crm_stages?.slug === stageSlug) return;
-    if (stageSlug === 'respondeu') {
-      await markLeadResponded(leadId);
+    if (!lead || getOperationalStageSlug(lead) === stageSlug) return;
+    setDropError('');
+
+    try {
+      if (stageSlug === 'primeiro_contato_enviado' && isFirstContactPending(lead)) {
+        setPendingFirstContact(lead);
+        return;
+      }
+      if (stageSlug === 'sem_resposta' && isFirstContactPending(lead)) {
+        setDropError('Envie o primeiro contato antes de mover o lead para Sem resposta.');
+        return;
+      }
+      if (stageSlug === 'respondeu') {
+        await markLeadResponded(leadId);
+      } else if (stageSlug === 'degustacao_realizada') {
+        await markDegustationDone(leadId);
+      } else if (['degustacao_agendada', 'proposta_enviada', 'fechado', 'perdido'].includes(stageSlug)) {
+        onOpen(lead);
+        return;
+      } else {
+        await moveLeadToStage(leadId, stageSlug);
+      }
       onChanged();
-      return;
+    } catch (error) {
+      setDropError(error instanceof Error ? error.message : 'Não foi possível mover este lead.');
     }
-    if (stageSlug === 'degustacao_realizada') {
-      await markDegustationDone(leadId);
-      onChanged();
-      return;
-    }
-    if (['primeiro_contato_enviado', 'sem_resposta', 'degustacao_agendada', 'proposta_enviada', 'fechado', 'perdido'].includes(stageSlug)) {
-      onOpen(lead);
-      return;
-    }
-    await moveLeadToStage(leadId, stageSlug);
-    onChanged();
   }
-  return <DndContext sensors={sensors} onDragEnd={dragEnd}><div className="kanban">{stages.map((stage) => <KanbanColumn key={stage.id} stage={stage} leads={leads.filter((l) => getOperationalStageSlug(l) === stage.slug)} onOpen={onOpen} />)}</div></DndContext>;
+
+  async function confirmFirstContactSent() {
+    if (!pendingFirstContact) return;
+    setConfirming(true);
+    setDropError('');
+    try {
+      await markContactSent(pendingFirstContact, currentUser?.full_name || undefined);
+      setPendingFirstContact(null);
+      onChanged();
+    } catch (error) {
+      setDropError(error instanceof Error ? error.message : 'Não foi possível registrar o primeiro contato.');
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  return <>
+    {dropError && <div className="table-feedback kanban-feedback" role="status">{dropError}</div>}
+    <DndContext sensors={sensors} onDragEnd={dragEnd}><div className="kanban">{stages.map((stage) => <KanbanColumn key={stage.id} stage={stage} leads={leads.filter((l) => getOperationalStageSlug(l) === stage.slug)} onOpen={onOpen} />)}</div></DndContext>
+    {pendingFirstContact && <div className="modal-backdrop kanban-confirm-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !confirming && setPendingFirstContact(null)}>
+      <div className="modal kanban-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="kanban-confirm-title">
+        <h2 id="kanban-confirm-title">Confirmar primeiro contato</h2>
+        <p>Você já enviou a primeira mensagem para <strong>{pendingFirstContact.nome_responsavel}</strong> pelo WhatsApp?</p>
+        <small>Ao confirmar, o CRM registrará o envio e agendará o próximo follow-up para amanhã às 09h.</small>
+        <div className="action-row">
+          <button className="button secondary" disabled={confirming} onClick={() => setPendingFirstContact(null)}>Cancelar</button>
+          <button className="button primary" disabled={confirming} onClick={confirmFirstContactSent}>{confirming ? 'Salvando...' : 'Sim, já enviei'}</button>
+        </div>
+      </div>
+    </div>}
+  </>;
 }
 
 function KanbanColumn({ stage, leads, onOpen }: { stage: Stage; leads: Lead[]; onOpen: (lead: Lead) => void }) {

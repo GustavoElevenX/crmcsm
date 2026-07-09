@@ -179,6 +179,13 @@ td small { color: var(--muted); display: block; margin-top: 3px; }
 .kanban-card footer { align-items: center; display: flex; font-size: 9px; justify-content: space-between; margin-top: 10px; }
 .kanban-card footer button { background: #fff0ef; border: 0; border-radius: 5px; color: #bc2429; cursor: pointer; font-size: 9px; padding: 4px 7px; }
 .drop-empty { border: 1px dashed #c8d0c4; border-radius: 8px; color: #919a93; font-size: 10px; padding: 24px 8px; text-align: center; }
+.kanban-feedback { margin-bottom: 12px; }
+.kanban-confirm-backdrop { align-items: center; display: flex; justify-content: center; padding: 20px; }
+.kanban-confirm-modal { max-width: 460px; }
+.kanban-confirm-modal h2 { margin: 0 0 12px; }
+.kanban-confirm-modal p { line-height: 1.5; margin: 0 0 8px; }
+.kanban-confirm-modal > small { color: var(--muted); display: block; line-height: 1.5; }
+.kanban-confirm-modal .action-row { justify-content: flex-end; margin-top: 24px; }
 
 /* Modals & drawer */
 .modal-backdrop, .drawer-backdrop { background: rgba(21, 37, 27, .42); inset: 0; position: fixed; z-index: 100; backdrop-filter: blur(2px); }
