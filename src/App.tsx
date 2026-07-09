@@ -8,12 +8,15 @@ import { DndContext, type DragEndEvent, PointerSensor, useDraggable, useDroppabl
 import { format, isAfter, isSameDay, isSameMonth, subDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { supabase } from './lib/supabase';
-import { getAlertStatus, getWhatsAppUrl, markContactSent, markLeadResponded, moveLeadToStage } from './lib/crm';
+import {
+  copyCurrentMessage, getAlertStatus, getFollowupLabel, getWhatsAppUrl, hasAutomaticFollowup,
+  markContactSent, markDegustationDone, markLeadResponded, moveLeadToStage,
+} from './lib/crm';
 import type { Lead, Profile, Stage, View } from './types';
 import { Login } from './components/Login';
 import { LeadForm } from './components/LeadForm';
 import { LeadDrawer } from './components/LeadDrawer';
-import { AlertBadge, DateText, OriginLabel, Temperature } from './components/common';
+import { AlertBadge, DateText, FollowupDateText, OriginLabel, Temperature } from './components/common';
 import logoUrl from '../imagens/logo cms.PNG';
 
 const NAV: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
@@ -22,6 +25,8 @@ const NAV: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'late', label: 'Atrasados', icon: BellRing }, { id: 'degustations', label: 'Degustações', icon: Droplets },
   { id: 'proposals', label: 'Propostas', icon: FileText }, { id: 'reports', label: 'Relatórios simples', icon: BarChart3 },
 ];
+const ATTENTION_STATUSES = ['atrasado', 'novo_lead_parado', 'proposta_sem_retorno', 'lead_parado'];
+function needsAttention(lead: Lead) { return ATTENTION_STATUSES.includes(getAlertStatus(lead)); }
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -66,7 +71,7 @@ export default function App() {
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'open' : ''}`}>
         <div className="logo"><img src={logoUrl} alt="Casa de Sucos Mix" /><div><small>CRM B2B</small></div><button className="mobile-close" onClick={() => setMenuOpen(false)}><X /></button></div>
-        <nav>{NAV.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? 'active' : ''} onClick={() => { setView(id); setMenuOpen(false); }}><Icon size={19} /><span>{label}</span>{id === 'late' && leads.filter((l) => getAlertStatus(l) === 'atrasado').length > 0 && <b>{leads.filter((l) => getAlertStatus(l) === 'atrasado').length}</b>}</button>)}</nav>
+        <nav>{NAV.map(({ id, label, icon: Icon }) => <button key={id} className={view === id ? 'active' : ''} onClick={() => { setView(id); setMenuOpen(false); }}><Icon size={19} /><span>{label}</span>{id === 'late' && leads.filter(needsAttention).length > 0 && <b>{leads.filter(needsAttention).length}</b>}</button>)}</nav>
         <div className="sidebar-profile"><div className="avatar">{(profile?.full_name || session.user.email || 'V')[0].toUpperCase()}</div><div><strong>{profile?.full_name || 'Vendedora'}</strong><small>{session.user.email}</small></div><button title="Sair" onClick={() => supabase.auth.signOut()}><LogOut size={18} /></button></div>
       </aside>
       <main className="main">
@@ -94,10 +99,10 @@ function Page(props: { view: View; leads: Lead[]; stages: Stage[]; onOpen: (lead
   let title = '';
   let filtered = props.leads;
   if (props.view === 'today') { title = 'Follow-ups para fazer hoje'; filtered = filtered.filter((l) => getAlertStatus(l) === 'hoje'); }
-  if (props.view === 'late') { title = 'Follow-ups que precisam de atenção'; filtered = filtered.filter((l) => ['atrasado', 'novo_lead_parado', 'proposta_sem_retorno', 'lead_parado'].includes(getAlertStatus(l))); }
+  if (props.view === 'late') { title = 'Follow-ups que precisam de atenção'; filtered = filtered.filter(needsAttention); }
   if (props.view === 'degustations') { title = 'Degustações'; filtered = filtered.filter((l) => l.degustacao_agendada_em || l.degustacao_realizada_em); }
   if (props.view === 'proposals') { title = 'Propostas enviadas'; filtered = filtered.filter((l) => l.proposta_enviada_em); }
-  return <LeadList {...props} leads={filtered} title={title} />;
+  return <LeadList {...props} leads={filtered} title={title} mode={props.view} />;
 }
 
 function Dashboard({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead) => void }) {
@@ -127,7 +132,10 @@ function Dashboard({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead) => v
     ['Fechados no mês', filteredLeads.filter((l) => l.fechado_em && isSameMonth(new Date(l.fechado_em), now)).length, ClipboardList, 'green'],
     ['Valor no mês', filteredLeads.filter((l) => l.fechado_em && isSameMonth(new Date(l.fechado_em), now)).reduce((sum, l) => sum + Number(l.valor_primeiro_pedido || 0), 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }), CircleDollarSign, 'lime'],
   ] as const;
-  const urgent = [...active].sort((a, b) => alertRank(getAlertStatus(a)) - alertRank(getAlertStatus(b))).slice(0, 6);
+  const urgent = active
+    .filter((lead) => getAlertStatus(lead) !== 'em_dia')
+    .sort((a, b) => alertRank(getAlertStatus(a)) - alertRank(getAlertStatus(b)))
+    .slice(0, 6);
   const origins = [
     ['Tráfego pago', filteredLeads.filter((l) => l.origem.startsWith('Trafego')).length],
     ['Link da bio', filteredLeads.filter((l) => l.origem === 'Link da Bio').length],
@@ -147,23 +155,41 @@ function Dashboard({ leads, onOpen }: { leads: Lead[]; onOpen: (lead: Lead) => v
     <section className="welcome"><div><p className="eyebrow">Visão geral</p><h2>Bom trabalho, {leads[0]?.profiles?.full_name?.split(' ')[0] || 'time'}! <span>👋</span></h2><p>Estes são os números que merecem sua atenção agora.</p></div><div className="welcome-origins">{origins.map(([name, value]) => <div key={name}><strong>{value}</strong><span>{name}</span></div>)}</div></section>
     <div className="metric-grid">{metrics.map(([label, value, Icon, tone]) => <article className={`metric-card ${tone}`} key={label}><div className="metric-icon"><Icon size={20} /></div><div><span>{label}</span><strong>{value}</strong></div></article>)}</div>
     <section className="panel"><div className="panel-header"><div><p className="eyebrow">Prioridade do dia</p><h2>Leads que pedem atenção</h2></div><span className="muted">{urgent.length} de {active.length} ativos</span></div>
-      <div className="urgent-list">{urgent.length ? urgent.map((lead) => <button key={lead.id} onClick={() => onOpen(lead)}><div className="lead-avatar">{lead.nome_responsavel[0]}</div><div className="lead-main"><strong>{lead.nome_responsavel}</strong><span>{lead.empresa} · {lead.produto_interesse || 'Produto não informado'}</span></div><AlertBadge lead={lead} /><div className="followup-date"><small>Próximo contato</small><DateText value={lead.proximo_followup_em} /></div><ChevronRight size={18} /></button>) : <div className="empty">Tudo em ordem por aqui. Nenhum lead urgente.</div>}</div>
+      <div className="urgent-list">{urgent.length ? urgent.map((lead) => <button key={lead.id} onClick={() => onOpen(lead)}><div className="lead-avatar">{lead.nome_responsavel[0]}</div><div className="lead-main"><strong>{lead.nome_responsavel}</strong><span>{lead.empresa} · {lead.produto_interesse || 'Produto não informado'}</span></div><AlertBadge lead={lead} /><div className="followup-date"><small>Próximo contato</small><FollowupDateText value={lead.proximo_followup_em} /></div><ChevronRight size={18} /></button>) : <div className="empty">Tudo em ordem por aqui. Nenhum lead urgente.</div>}</div>
     </section>
   </>;
 }
 
-function LeadList({ leads, onOpen, onChanged, title }: { leads: Lead[]; onOpen: (lead: Lead) => void; onChanged: () => void; title?: string }) {
+function LeadList({ leads, onOpen, onChanged, title, mode }: { leads: Lead[]; onOpen: (lead: Lead) => void; onChanged: () => void; title?: string; mode?: View }) {
   const [query, setQuery] = useState('');
   const [origin, setOrigin] = useState('');
   const [stage, setStage] = useState('');
+  const [feedback, setFeedback] = useState('');
   const shown = leads.filter((l) => `${l.nome_responsavel} ${l.empresa} ${l.telefone}`.toLowerCase().includes(query.toLowerCase()) && (!origin || l.origem === origin) && (!stage || l.crm_stages?.slug === stage));
+  const isDegustationList = mode === 'degustations';
+
+  async function quickAction(action: () => Promise<void>, success: string) {
+    try {
+      await action();
+      setFeedback(success);
+      onChanged();
+    } catch (e) {
+      setFeedback(e instanceof Error ? e.message : 'Não foi possível concluir a ação.');
+    }
+    setTimeout(() => setFeedback(''), 3500);
+  }
+
   return <section className="panel table-panel"><div className="panel-header"><div><p className="eyebrow">{shown.length} registros</p><h2>{title || 'Todos os leads'}</h2></div></div>
+    {feedback && <div className="table-feedback" role="status">{feedback}</div>}
     <div className="filters"><label className="search"><Search size={18} /><input placeholder="Buscar nome, empresa ou telefone..." value={query} onChange={(e) => setQuery(e.target.value)} /></label>
       <select value={origin} onChange={(e) => setOrigin(e.target.value)}><option value="">Todas as origens</option>{[...new Set(leads.map((l) => l.origem))].map((o) => <option key={o}>{o}</option>)}</select>
       <select value={stage} onChange={(e) => setStage(e.target.value)}><option value="">Todas as etapas</option>{[...new Map(leads.map((l) => [l.crm_stages?.slug, l.crm_stages])).values()].filter(Boolean).map((s) => <option key={s!.slug} value={s!.slug}>{s!.name}</option>)}</select>
     </div>
-    <div className="table-wrap"><table><thead><tr><th>Lead</th><th>Origem</th><th>Segmento</th><th>Produto</th><th>Bairro</th><th>Etapa</th><th>Temperatura</th><th>Próximo follow-up</th><th>Alerta</th><th>Responsável</th><th>Ações</th></tr></thead>
-      <tbody>{shown.map((lead) => <tr key={lead.id}><td><button className="name-button" onClick={() => onOpen(lead)}><strong>{lead.nome_responsavel}</strong><span>{lead.empresa}<br />{lead.telefone}</span></button></td><td><OriginLabel origin={lead.origem} /></td><td>{lead.segmento || '—'}</td><td>{lead.produto_interesse || '—'}</td><td>{lead.bairro || '—'}</td><td><span className="stage-pill">{lead.crm_stages?.name || lead.status}</span></td><td><Temperature value={lead.temperatura} /></td><td><DateText value={lead.proximo_followup_em} withTime /></td><td><AlertBadge lead={lead} /></td><td>{lead.profiles?.full_name || '—'}</td><td><div className="row-actions"><button onClick={() => onOpen(lead)}>Ver</button><a href={getWhatsAppUrl(lead)} target="_blank" rel="noreferrer">WhatsApp</a><button onClick={async () => { await markLeadResponded(lead.id); onChanged(); }}>Respondeu</button><button onClick={async () => { await markContactSent(lead); onChanged(); }}>Enviado</button></div></td></tr>)}</tbody>
+    <div className="table-wrap"><table><thead><tr><th>Lead</th><th>Origem</th><th>Segmento</th><th>Produto</th><th>Bairro</th><th>Etapa</th><th>Follow-up atual</th><th>Próximo follow-up</th><th>Alerta</th>{isDegustationList && <><th>Data da degustação</th><th>Vendedor externo</th></>}<th>Responsável</th><th>Ações</th></tr></thead>
+      <tbody>{shown.map((lead) => {
+        const canSend = hasAutomaticFollowup(lead);
+        return <tr key={lead.id}><td><button className="name-button" onClick={() => onOpen(lead)}><strong>{lead.nome_responsavel}</strong><span>{lead.empresa}<br />{lead.telefone}</span></button></td><td><OriginLabel origin={lead.origem} /></td><td>{lead.segmento || '—'}</td><td>{lead.produto_interesse || '—'}</td><td>{lead.bairro || '—'}</td><td><span className="stage-pill">{lead.crm_stages?.name || lead.status}</span><small><Temperature value={lead.temperatura} /></small></td><td>{getFollowupLabel(lead)}</td><td><FollowupDateText value={lead.proximo_followup_em} /></td><td><AlertBadge lead={lead} /></td>{isDegustationList && <><td><DateText value={lead.degustacao_realizada_em || lead.degustacao_agendada_em} withTime /></td><td>{lead.vendedor_externo || '—'}<small>{lead.degustacao_realizada_em ? 'Realizada' : 'Agendada'}</small></td></>}<td>{lead.profiles?.full_name || '—'}</td><td><div className="row-actions"><button onClick={() => onOpen(lead)}>Ver</button><button disabled={!canSend} title={canSend ? 'Copiar mensagem atual' : 'Não há mensagem automática para esta etapa.'} onClick={() => quickAction(() => copyCurrentMessage(lead), 'Mensagem copiada!')}>Copiar</button><a href={getWhatsAppUrl(lead)} target="_blank" rel="noreferrer">WhatsApp</a><button disabled={!canSend} title={canSend ? 'Marcar contato como enviado' : 'Não há mensagem automática para esta etapa.'} onClick={() => quickAction(() => markContactSent(lead), 'Contato registrado e próximo follow-up calculado.')}>Enviado</button><button onClick={() => quickAction(() => markLeadResponded(lead.id), 'Lead marcado como respondido.')}>Respondeu</button></div></td></tr>;
+      })}</tbody>
     </table>{!shown.length && <div className="empty">Nenhum lead encontrado com esses filtros.</div>}</div>
   </section>;
 }
@@ -173,7 +199,25 @@ function Kanban({ leads, stages, onOpen, onChanged }: { leads: Lead[]; stages: S
   async function dragEnd(event: DragEndEvent) {
     const stageSlug = event.over?.id as string | undefined;
     if (!stageSlug) return;
-    await moveLeadToStage(String(event.active.id), stageSlug); onChanged();
+    const leadId = String(event.active.id);
+    const lead = leads.find((item) => item.id === leadId);
+    if (!lead || lead.crm_stages?.slug === stageSlug) return;
+    if (stageSlug === 'respondeu') {
+      await markLeadResponded(leadId);
+      onChanged();
+      return;
+    }
+    if (stageSlug === 'degustacao_realizada') {
+      await markDegustationDone(leadId);
+      onChanged();
+      return;
+    }
+    if (['primeiro_contato_enviado', 'sem_resposta', 'degustacao_agendada', 'proposta_enviada', 'fechado', 'perdido'].includes(stageSlug)) {
+      onOpen(lead);
+      return;
+    }
+    await moveLeadToStage(leadId, stageSlug);
+    onChanged();
   }
   return <DndContext sensors={sensors} onDragEnd={dragEnd}><div className="kanban">{stages.map((stage) => <KanbanColumn key={stage.id} stage={stage} leads={leads.filter((l) => l.stage_id === stage.id)} onOpen={onOpen} />)}</div></DndContext>;
 }
@@ -186,7 +230,7 @@ function KanbanColumn({ stage, leads, onOpen }: { stage: Stage; leads: Lead[]; o
 function KanbanCard({ lead, onOpen }: { lead: Lead; onOpen: (lead: Lead) => void }) {
   const { attributes, listeners, setNodeRef, transform } = useDraggable({ id: lead.id });
   return <article ref={setNodeRef} style={{ transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined }} className="kanban-card" {...listeners} {...attributes} onDoubleClick={() => onOpen(lead)}>
-    <div className="card-top"><OriginLabel origin={lead.origem} /><AlertBadge lead={lead} /></div><h3>{lead.nome_responsavel}</h3><p>{lead.empresa}</p><div className="card-product">{lead.produto_interesse || 'Produto não informado'}</div><footer><span><DateText value={lead.proximo_followup_em} /></span><button onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(lead)}>Abrir</button></footer>
+    <div className="card-top"><OriginLabel origin={lead.origem} /><AlertBadge lead={lead} /></div><h3>{lead.nome_responsavel}</h3><p>{lead.empresa}</p><div className="card-product">{lead.produto_interesse || 'Produto não informado'}<small>{getFollowupLabel(lead)}</small></div><footer><span><FollowupDateText value={lead.proximo_followup_em} /></span><button onPointerDown={(e) => e.stopPropagation()} onClick={() => onOpen(lead)}>Abrir</button></footer>
   </article>;
 }
 

@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
-import { Check, Clipboard, ExternalLink, MessageCircle, X } from 'lucide-react';
+import { Check, Clipboard, ExternalLink, MessageCircle, Pencil, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { FollowupTemplate, Lead, Profile } from '../types';
 import {
-  applyTemplate, closeLead, copyCurrentMessage, getCurrentFollowupTemplate, getWhatsAppUrl, loseLead,
-  markContactSent, markDegustationDone, markLeadResponded, markProposalSent, moveLeadToStage,
-  pauseLead, scheduleDegustation, startPostDegustation,
+  applyTemplate, copyCurrentMessage, getCurrentFollowupTemplate, getWhatsAppUrl,
+  markContactSent, markDegustationDone, markLeadResponded, moveLeadToStage,
+  pauseLead, startPostDegustation,
 } from '../lib/crm';
-import { AlertBadge, DateText, OriginLabel, Temperature } from './common';
+import { AlertBadge, DateText, FollowupDateText, OriginLabel, Temperature } from './common';
+import { CommercialActionModal, type CommercialAction } from './CommercialActionModal';
+import { LeadForm } from './LeadForm';
 
 export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Lead; currentUser?: Profile | null; onClose: () => void; onChanged: () => void }) {
   const [template, setTemplate] = useState<FollowupTemplate | null>(null);
   const [busy, setBusy] = useState('');
   const [toast, setToast] = useState('');
+  const [commercialAction, setCommercialAction] = useState<CommercialAction | null>(null);
+  const [editing, setEditing] = useState(false);
   const userName = currentUser?.full_name || undefined;
 
   useEffect(() => { getCurrentFollowupTemplate(lead).then(setTemplate).catch(() => setTemplate(null)); }, [lead]);
@@ -27,12 +31,12 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
 
   const message = template ? applyTemplate(template.template, lead, userName) : '';
 
-  return (
+  return <>
     <div className="drawer-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <aside className="drawer">
         <header className="drawer-header">
           <div><p className="eyebrow">Detalhes do lead</p><h2>{lead.nome_responsavel}</h2><p>{lead.empresa}</p></div>
-          <button className="icon-button" onClick={onClose}><X /></button>
+          <div className="drawer-header-actions"><button className="button secondary" onClick={() => setEditing(true)}><Pencil size={16} />Editar lead</button><button className="icon-button" onClick={onClose}><X /></button></div>
         </header>
         <div className="drawer-body">
           {toast && <div className="toast"><Check size={16} />{toast}</div>}
@@ -41,15 +45,16 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
             <div className="detail-grid">
               <Info label="Telefone" value={lead.telefone} /><Info label="E-mail" value={lead.email} />
               <Info label="Segmento" value={lead.segmento} /><Info label="Produto" value={lead.produto_interesse} />
-              <Info label="Bairro" value={lead.bairro} /><Info label="Campanha / indicação" value={lead.campanha || lead.indicado_por} />
+              <Info label="Bairro" value={lead.bairro} /><Info label="Vendedor externo" value={lead.vendedor_externo} />
             </div>
           </section>
+          <OriginDetails lead={lead} />
           <section className="detail-section">
             <div className="section-title"><h3>Status comercial</h3><AlertBadge lead={lead} /></div>
             <div className="status-strip">
               <div><small>Etapa atual</small><strong>{lead.crm_stages?.name || lead.status}</strong></div>
               <div><small>Temperatura</small><Temperature value={lead.temperatura} /></div>
-              <div><small>Próximo follow-up</small><strong><DateText value={lead.proximo_followup_em} withTime /></strong></div>
+              <div><small>Próximo follow-up</small><strong><FollowupDateText value={lead.proximo_followup_em} /></strong></div>
               <div><small>Responsável</small><strong>{lead.profiles?.full_name || 'Não definido'}</strong></div>
             </div>
           </section>
@@ -67,25 +72,13 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
             <div className="section-title"><h3>Ações comerciais</h3></div>
             <div className="commercial-actions">
               <Action label="Lead respondeu" busy={busy} onClick={() => act('respondeu', () => markLeadResponded(lead.id))} />
-              <Action label="Agendar degustação" busy={busy} onClick={() => {
-                const value = prompt('Data e hora da degustação (AAAA-MM-DD HH:mm):');
-                if (value) act('agenda', () => scheduleDegustation(lead.id, new Date(value.replace(' ', 'T'))));
-              }} />
+              <Action label="Agendar degustação" busy={busy} onClick={() => setCommercialAction('schedule')} />
               <Action label="Degustação realizada" busy={busy} onClick={() => act('degustacao', () => markDegustationDone(lead.id))} />
-              <Action label="Iniciar pós-degustação" busy={busy} onClick={() => act('posdeg', () => startPostDegustation(lead.id))} />
-              <Action label="Proposta enviada" busy={busy} onClick={() => {
-                const value = prompt('Valor da proposta (opcional):');
-                act('proposta', () => markProposalSent(lead.id, value ? Number(value.replace(',', '.')) : undefined));
-              }} />
+              {lead.crm_stages?.slug === 'degustacao_realizada' && lead.etapa_cadencia !== 'pos_degustacao' && <Action label="Iniciar pós-degustação" busy={busy} onClick={() => act('posdeg', () => startPostDegustation(lead.id))} />}
+              <Action label="Proposta enviada" busy={busy} onClick={() => setCommercialAction('proposal')} />
               <Action label="Pedido teste / negociação" busy={busy} onClick={() => act('negociacao', () => moveLeadToStage(lead.id, 'pedido_teste_negociacao'))} />
-              <Action label="Fechado" tone="success" busy={busy} onClick={() => {
-                const value = prompt('Valor do primeiro pedido (opcional):');
-                act('fechado', () => closeLead(lead.id, value ? Number(value.replace(',', '.')) : undefined));
-              }} />
-              <Action label="Perdido" tone="danger" busy={busy} onClick={() => {
-                const reason = prompt('Qual foi o motivo da perda?');
-                if (reason) act('perdido', () => loseLead(lead.id, reason));
-              }} />
+              <Action label="Fechado" tone="success" busy={busy} onClick={() => setCommercialAction('close')} />
+              <Action label="Perdido" tone="danger" busy={busy} onClick={() => setCommercialAction('lose')} />
               <Action label="Pausado" busy={busy} onClick={() => act('pausado', () => pauseLead(lead.id))} />
             </div>
           </section>
@@ -100,7 +93,26 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
         </div>
       </aside>
     </div>
-  );
+    {commercialAction && <CommercialActionModal action={commercialAction} leadId={lead.id} onClose={() => setCommercialAction(null)} onSaved={onChanged} />}
+    {editing && <LeadForm lead={lead} onClose={() => setEditing(false)} onSaved={onChanged} />}
+  </>;
+}
+
+function OriginDetails({ lead }: { lead: Lead }) {
+  const details: Array<[string, string | null | undefined, boolean?]> = [];
+  if (lead.origem === 'Trafego Pago - Formulario Meta Ads') {
+    details.push(
+      ['Campanha', lead.campanha], ['Conjunto de anúncio', lead.conjunto_anuncio],
+      ['Anúncio', lead.anuncio], ['ID do formulário / lead', lead.meta_lead_id],
+      ['Envio do formulário', lead.data_envio_formulario, true],
+    );
+  }
+  if (lead.origem === 'Link da Bio') details.push(['Link de origem', lead.link_origem]);
+  if (lead.origem === 'Indicacao') details.push(['Indicado por', lead.indicado_por]);
+  if (lead.origem === 'Prospecao Ativa') {
+    details.push(['Responsável pela prospecção', lead.responsavel_prospeccao], ['Canal de prospecção', lead.canal_prospeccao]);
+  }
+  return <section className="detail-section"><div className="section-title"><h3>Origem do lead</h3><OriginLabel origin={lead.origem} /></div><div className="detail-grid">{details.length ? details.map(([label, value, date]) => <div className="info" key={label}><small>{label}</small><span>{date ? <DateText value={value} withTime /> : value || '—'}</span></div>) : <Info label="Detalhes adicionais" value="Não informados" />}</div></section>;
 }
 
 function Info({ label, value }: { label: string; value?: string | null }) {

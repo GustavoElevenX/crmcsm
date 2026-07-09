@@ -1,4 +1,4 @@
-import { format } from 'date-fns';
+import { format, isBefore, isSameDay, isTomorrow, startOfDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { AlertStatus, Lead } from '../types';
 import { getAlertStatus } from '../lib/crm';
@@ -20,6 +20,18 @@ export function Temperature({ value }: { value: Lead['temperatura'] }) {
 export function DateText({ value, withTime = false }: { value?: string | null; withTime?: boolean }) {
   if (!value) return <span className="muted">—</span>;
   return <>{format(new Date(value), withTime ? "dd/MM/yyyy 'às' HH:mm" : 'dd/MM/yyyy', { locale: ptBR })}</>;
+}
+
+export function FollowupDateText({ value }: { value?: string | null }) {
+  if (!value) return <span className="muted">—</span>;
+  const date = new Date(value);
+  const now = new Date();
+  if (isSameDay(date, now)) return <>Hoje</>;
+  if (isTomorrow(date)) return <>Amanhã</>;
+  if (isBefore(startOfDay(date), startOfDay(now))) {
+    return <>Atrasado desde {format(date, 'dd/MM/yyyy', { locale: ptBR })}</>;
+  }
+  return <>{format(date, 'dd/MM/yyyy', { locale: ptBR })}</>;
 }
 
 export function OriginLabel({ origin }: { origin: Lead['origem'] }) {

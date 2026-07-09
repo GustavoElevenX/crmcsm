@@ -1,4 +1,4 @@
-import { addDays, differenceInHours, isBefore, isSameDay, subDays } from 'date-fns';
+import { addDays, differenceInHours, isBefore, isSameDay, startOfDay, subDays } from 'date-fns';
 import { supabase } from './supabase';
 import type { AlertStatus, FollowupTemplate, Lead, Stage } from '../types';
 
@@ -7,6 +7,7 @@ type DatabaseError = { code?: string; message?: string; details?: string; hint?:
 function getFriendlyDatabaseError(error: DatabaseError, fallback: string) {
   const text = `${error.message || ''} ${error.details || ''}`.toLowerCase();
   if (error.code === '23514' || text.includes('telefone_minimo')) return new Error('Informe um telefone válido com DDD.');
+  if (error.code === '23505' && text.includes('meta_lead_id')) return new Error('Esse lead do formulário já foi cadastrado.');
   if (error.code === '23505') return new Error('Já existe um registro com esses dados.');
   if (error.code === '23502') return new Error('Preencha todos os campos obrigatórios.');
   if (error.code === '23503') return new Error('Não foi possível vincular este registro. Atualize a página e tente novamente.');
@@ -60,12 +61,48 @@ export function getWhatsAppUrl(lead: Lead) {
   return `https://web.whatsapp.com/send?phone=${formatPhoneForWhatsApp(lead.telefone)}`;
 }
 
+export function getFollowupLabel(lead: Lead) {
+  if (lead.etapa_cadencia === 'manual') return 'Manual';
+  if (lead.etapa_cadencia === 'encerrado') return 'Encerrado';
+  const cadenceLabel = {
+    pre_degustacao: 'Pré-degustação',
+    pos_degustacao: 'Pós-degustação',
+    pos_proposta: 'Pós-proposta',
+  }[lead.etapa_cadencia];
+  return `${cadenceLabel} ${lead.indice_followup + 1}`;
+}
+
+export function hasAutomaticFollowup(lead: Lead) {
+  const lastIndex = { pre_degustacao: 5, pos_degustacao: 4, pos_proposta: 2 };
+  return lead.etapa_cadencia in lastIndex
+    && lead.indice_followup <= lastIndex[lead.etapa_cadencia as keyof typeof lastIndex];
+}
+
+export function getStageSlugAfterContact(cadence: FollowupTemplate['cadencia'], followupIndex: number) {
+  if (cadence !== 'pre_degustacao') return null;
+  return followupIndex === 0 ? 'primeiro_contato_enviado' : 'sem_resposta';
+}
+
 export function getAlertStatus(lead: Lead): AlertStatus {
-  if (lead.crm_stages?.is_final || lead.etapa_cadencia === 'encerrado') return 'em_dia';
+  if (lead.crm_stages?.is_final || lead.etapa_cadencia === 'encerrado') {
+    return 'em_dia';
+  }
   const now = new Date();
+  const todayStart = startOfDay(now);
   const next = lead.proximo_followup_em ? new Date(lead.proximo_followup_em) : null;
-  if (next && isBefore(next, now)) return 'atrasado';
-  if (lead.crm_stages?.slug === 'novo_lead' && differenceInHours(now, new Date(lead.created_at)) > 2) return 'novo_lead_parado';
+  const nextDay = next ? startOfDay(next) : null;
+  const createdAt = new Date(lead.created_at);
+  const isNewLeadWithoutFirstContact =
+    lead.crm_stages?.slug === 'novo_lead'
+    && lead.etapa_cadencia === 'pre_degustacao'
+    && lead.indice_followup === 0
+    && !lead.ultimo_contato_em;
+
+  if (isNewLeadWithoutFirstContact) {
+    if (differenceInHours(now, createdAt) >= 2) return 'novo_lead_parado';
+    return 'hoje';
+  }
+  if (nextDay && isBefore(nextDay, todayStart)) return 'atrasado';
   if (lead.crm_stages?.slug === 'proposta_enviada' && lead.proposta_enviada_em && isBefore(new Date(lead.proposta_enviada_em), subDays(now, 3))) {
     const hasLaterInteraction = lead.lead_interactions?.some((item) => item.type !== 'proposta' && new Date(item.created_at) > new Date(lead.proposta_enviada_em!));
     if (!hasLaterInteraction) return 'proposta_sem_retorno';
@@ -124,6 +161,7 @@ export async function moveLeadToStage(leadId: string, stageSlug: string) {
   if (stage.is_final) Object.assign(changes, { etapa_cadencia: 'encerrado', proximo_followup_em: null });
   if (stageSlug === 'degustacao_realizada') changes.degustacao_realizada_em = new Date().toISOString();
   if (stageSlug === 'proposta_enviada') Object.assign(changes, { proposta_enviada_em: new Date().toISOString(), etapa_cadencia: 'pos_proposta', indice_followup: 0, proximo_followup_em: addDays(new Date(), 1).toISOString() });
+  if (stageSlug === 'pedido_teste_negociacao') Object.assign(changes, { etapa_cadencia: 'manual', proximo_followup_em: null });
   if (stageSlug === 'fechado') changes.fechado_em = new Date().toISOString();
   await updateLead(leadId, changes);
   await addInteraction(leadId, 'mudanca_status', 'internal', `Movido para ${stage.name}`);
@@ -140,12 +178,19 @@ export async function markContactSent(lead: Lead, currentUserName?: string) {
     .eq('cadencia', current.cadencia).eq('followup_index', nextIndex).eq('active', true).maybeSingle();
   if (error) throw getFriendlyDatabaseError(error, 'Não foi possível calcular o próximo follow-up.');
   const now = new Date();
+  const stageChanges: Record<string, unknown> = {};
+  const targetStageSlug = getStageSlugAfterContact(current.cadencia, current.followup_index);
+  if (targetStageSlug) {
+    const targetStage = await getStage(targetStageSlug);
+    stageChanges.stage_id = targetStage.id;
+    stageChanges.status = targetStage.name;
+  }
   if (next) {
     await updateLead(lead.id, {
       ultimo_contato_em: now.toISOString(),
       indice_followup: nextIndex,
       proximo_followup_em: addDays(now, next.offset_days - current.offset_days).toISOString(),
-      ...(lead.crm_stages?.slug === 'novo_lead' ? { stage_id: (await getStage('primeiro_contato_enviado')).id, status: '1º contato enviado' } : {}),
+      ...stageChanges,
     });
   } else {
     const paused = await getStage('pausado');
@@ -162,16 +207,23 @@ export async function markLeadResponded(leadId: string) {
   await addInteraction(leadId, 'mudanca_status', 'inbound', 'Lead respondeu');
 }
 
-export async function scheduleDegustation(leadId: string, date: Date) {
+export async function scheduleDegustation(leadId: string, date: Date, externalSeller?: string, note?: string) {
   const stage = await getStage('degustacao_agendada');
-  await updateLead(leadId, { stage_id: stage.id, status: stage.name, degustacao_agendada_em: date.toISOString(), etapa_cadencia: 'manual', proximo_followup_em: null });
-  await addInteraction(leadId, 'degustacao', 'internal', `Degustação agendada para ${date.toLocaleString('pt-BR')}`);
+  await updateLead(leadId, {
+    stage_id: stage.id, status: stage.name, degustacao_agendada_em: date.toISOString(),
+    vendedor_externo: externalSeller || null, etapa_cadencia: 'manual', proximo_followup_em: null,
+  });
+  const details = [externalSeller ? `Vendedor: ${externalSeller}` : '', note || ''].filter(Boolean).join(' · ');
+  await addInteraction(leadId, 'degustacao', 'internal', `Degustação agendada para ${date.toLocaleString('pt-BR')}${details ? ` · ${details}` : ''}`);
 }
 
 export async function markDegustationDone(leadId: string) {
   const stage = await getStage('degustacao_realizada');
-  await updateLead(leadId, { stage_id: stage.id, status: stage.name, degustacao_realizada_em: new Date().toISOString(), etapa_cadencia: 'manual', proximo_followup_em: null });
-  await addInteraction(leadId, 'degustacao', 'internal', 'Degustação realizada');
+  await updateLead(leadId, {
+    stage_id: stage.id, status: stage.name, degustacao_realizada_em: new Date().toISOString(),
+    etapa_cadencia: 'pos_degustacao', indice_followup: 0, proximo_followup_em: new Date().toISOString(),
+  });
+  await addInteraction(leadId, 'degustacao', 'internal', 'Degustação realizada. Cadência pós-degustação iniciada.');
 }
 
 export async function startPostDegustation(leadId: string) {
@@ -179,20 +231,23 @@ export async function startPostDegustation(leadId: string) {
   await addInteraction(leadId, 'mudanca_status', 'internal', 'Cadência pós-degustação iniciada');
 }
 
-export async function markProposalSent(leadId: string, proposalValue?: number) {
+export async function markProposalSent(leadId: string, proposalValue?: number, suggestedQuantity?: string, note?: string) {
   const stage = await getStage('proposta_enviada');
   await updateLead(leadId, {
     stage_id: stage.id, status: stage.name, proposta_enviada_em: new Date().toISOString(),
-    valor_proposta: proposalValue ?? null, etapa_cadencia: 'pos_proposta', indice_followup: 0,
+    valor_proposta: proposalValue ?? null, quantidade_sugerida: suggestedQuantity || null,
+    etapa_cadencia: 'pos_proposta', indice_followup: 0,
     proximo_followup_em: addDays(new Date(), 1).toISOString(),
   });
-  await addInteraction(leadId, 'proposta', 'outbound', proposalValue ? `Proposta enviada: R$ ${proposalValue.toFixed(2)}` : 'Proposta enviada');
+  const details = [proposalValue ? `R$ ${proposalValue.toFixed(2)}` : '', suggestedQuantity || '', note || ''].filter(Boolean).join(' · ');
+  await addInteraction(leadId, 'proposta', 'outbound', `Proposta enviada${details ? `: ${details}` : ''}`);
 }
 
-export async function closeLead(leadId: string, firstOrderValue?: number) {
+export async function closeLead(leadId: string, firstOrderValue?: number, note?: string) {
   const stage = await getStage('fechado');
   await updateLead(leadId, { stage_id: stage.id, status: stage.name, fechado_em: new Date().toISOString(), valor_primeiro_pedido: firstOrderValue ?? null, etapa_cadencia: 'encerrado', proximo_followup_em: null });
-  await addInteraction(leadId, 'mudanca_status', 'internal', firstOrderValue ? `Fechado: R$ ${firstOrderValue.toFixed(2)}` : 'Lead fechado');
+  const details = [firstOrderValue ? `R$ ${firstOrderValue.toFixed(2)}` : '', note || ''].filter(Boolean).join(' · ');
+  await addInteraction(leadId, 'mudanca_status', 'internal', `Lead fechado${details ? `: ${details}` : ''}`);
 }
 
 export async function loseLead(leadId: string, reason: string) {
@@ -211,9 +266,50 @@ export async function createLead(payload: Record<string, unknown>) {
   const sanitizedPayload = Object.fromEntries(
     Object.entries(payload).map(([key, value]) => [key, typeof value === 'string' ? value.trim() || null : value]),
   );
-  const { error } = await supabase.from('leads').insert({
+  if (sanitizedPayload.meta_lead_id) {
+    const { data: duplicate, error: duplicateError } = await supabase
+      .from('leads')
+      .select('id')
+      .eq('meta_lead_id', sanitizedPayload.meta_lead_id)
+      .limit(1)
+      .maybeSingle();
+    if (duplicateError) throw getFriendlyDatabaseError(duplicateError, 'Não foi possível validar o ID do formulário.');
+    if (duplicate) throw new Error('Esse lead do formulário já foi cadastrado.');
+  }
+
+  const { data: inserted, error } = await supabase.from('leads').insert({
     ...sanitizedPayload, stage_id: stage.id, status: stage.name, owner_id: ownerId,
-    etapa_cadencia: 'pre_degustacao', indice_followup: 0, proximo_followup_em: new Date().toISOString(),
-  });
+    etapa_cadencia: 'pre_degustacao', indice_followup: 0,
+  }).select('id, created_at, proximo_followup_em').single();
   if (error) throw getFriendlyDatabaseError(error, 'Não foi possível cadastrar o lead. Tente novamente.');
+  if (!inserted.proximo_followup_em) {
+    const { error: followupError } = await supabase
+      .from('leads')
+      .update({ proximo_followup_em: inserted.created_at })
+      .eq('id', inserted.id);
+    if (followupError) throw getFriendlyDatabaseError(followupError, 'O lead foi criado, mas não foi possível preparar o primeiro follow-up.');
+  }
+}
+
+export async function updateLeadDetails(leadId: string, payload: Record<string, unknown>) {
+  const phone = String(payload.telefone || '').replace(/\D/g, '');
+  if (phone.length < 10 || phone.length > 13) throw new Error('Informe um telefone válido com DDD.');
+  const email = String(payload.email || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Informe um e-mail válido.');
+
+  const allowedFields = [
+    'nome_responsavel', 'telefone', 'email', 'empresa', 'segmento', 'produto_interesse', 'bairro',
+    'endereco', 'origem', 'meta_lead_id', 'campanha', 'conjunto_anuncio', 'anuncio', 'link_origem',
+    'indicado_por', 'responsavel_prospeccao', 'canal_prospeccao', 'data_envio_formulario',
+    'interesse_degustacao', 'observacao', 'temperatura', 'vendedor_externo',
+  ];
+  const sanitized = Object.fromEntries(
+    Object.entries(payload)
+      .filter(([key]) => allowedFields.includes(key))
+      .map(([key, value]) => [key, typeof value === 'string' ? value.trim() || null : value]),
+  );
+  sanitized.telefone = phone;
+  const { error } = await supabase.from('leads').update(sanitized).eq('id', leadId);
+  if (error) throw getFriendlyDatabaseError(error, 'Não foi possível salvar as alterações do lead.');
+  await addInteraction(leadId, 'observacao', 'internal', 'Dados do lead editados');
 }
