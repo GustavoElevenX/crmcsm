@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }));
-vi.mock('./supabase', () => ({ supabase: { from: fromMock } }));
+const { fromMock, getUserMock } = vi.hoisted(() => ({ fromMock: vi.fn(), getUserMock: vi.fn() }));
+vi.mock('./supabase', () => ({ supabase: { from: fromMock, auth: { getUser: getUserMock } } }));
 
 import {
-  BUSINESS_FOLLOWUP_HOUR, findActiveLeadsByPhone, formatPhoneForWhatsApp, getAlertStatus,
+  BUSINESS_FOLLOWUP_HOUR, findActiveLeadsByPhone, firstCommercialFollowupDate, formatPhoneForWhatsApp, getAlertStatus,
   getFinalCadenceChanges, getFollowupLabel, getPostDegustationChanges, getPostProposalChanges,
-  getStageSlugAfterContact, hasAutomaticFollowup, nextCommercialFollowupDate, normalizePhone,
-  normalizePhoneForStorage,
+  getOperationalStageLabel, getStageSlugAfterContact, hasAutomaticFollowup, isFirstContactPending,
+  markContactSent, nextCommercialFollowupDate, normalizePhone, normalizePhoneForStorage,
 } from './crm';
 import type { Lead } from '../types';
 
@@ -42,6 +42,17 @@ describe('alertas comerciais', () => {
   it('marca novo lead parado somente após duas horas sem contato', () => {
     const createdAt = new Date(Date.now() - 2 * 60 * 60 * 1000 - 1000).toISOString();
     expect(getAlertStatus(makeLead({ created_at: createdAt }))).toBe('novo_lead_parado');
+  });
+
+  it('não marca primeiro contato pendente como atraso comum', () => {
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const lead = makeLead({
+      proximo_followup_em: yesterday.toISOString(),
+      crm_stages: { id: 'stage-3', name: 'Sem resposta', slug: 'sem_resposta', position: 3, is_final: false },
+    });
+
+    expect(getAlertStatus(lead)).toBe('novo_lead_parado');
   });
 
   it('considera Hoje um follow-up anterior no mesmo dia', () => {
@@ -125,6 +136,74 @@ describe('helpers operacionais', () => {
     expect(next.getMinutes()).toBe(0);
   });
 
+  it('agenda primeiro contato para o próximo dia às 09h quando lead é criado após 18h', () => {
+    const createdAt = new Date(2026, 6, 8, 21, 36);
+    const next = new Date(firstCommercialFollowupDate(createdAt));
+
+    expect(next.getDate()).toBe(9);
+    expect(next.getHours()).toBe(9);
+    expect(next.getMinutes()).toBe(0);
+  });
+
+  it('identifica e apresenta como novo lead um estado sem resposta sem contato', () => {
+    const lead = makeLead({
+      crm_stages: { id: 'stage-3', name: 'Sem resposta', slug: 'sem_resposta', position: 3, is_final: false },
+    });
+
+    expect(isFirstContactPending(lead)).toBe(true);
+    expect(getOperationalStageLabel(lead)).toBe('Novo lead');
+  });
+
+  it('avança o primeiro contato para D+1 às 09h e para a etapa correta', async () => {
+    const current = {
+      id: 'template-1', name: '1º contato', cadencia: 'pre_degustacao' as const,
+      followup_index: 0, offset_days: 0, template: 'Oi, {{nome}}', active: true,
+    };
+    const next = { ...current, id: 'template-2', name: '2º contato', followup_index: 1, offset_days: 1 };
+    const leadUpdates: Record<string, unknown>[] = [];
+    let templateReads = 0;
+
+    getUserMock.mockResolvedValue({ data: { user: { id: 'user-1' } }, error: null });
+    fromMock.mockImplementation((table: string) => {
+      const query: Record<string, ReturnType<typeof vi.fn>> = {};
+      query.select = vi.fn(() => query);
+      query.eq = vi.fn(() => query);
+      query.insert = vi.fn(async () => ({ error: null }));
+      query.update = vi.fn((changes: Record<string, unknown>) => {
+        if (table === 'leads') leadUpdates.push(changes);
+        return query;
+      });
+      query.maybeSingle = vi.fn(async () => {
+        if (table === 'profiles') return { data: { id: 'user-1' }, error: null };
+        if (table === 'followup_templates') {
+          templateReads += 1;
+          return { data: templateReads === 1 ? current : next, error: null };
+        }
+        return { data: null, error: null };
+      });
+      query.single = vi.fn(async () => ({
+        data: { id: 'stage-2', name: '1º contato enviado', slug: 'primeiro_contato_enviado', position: 2, is_final: false },
+        error: null,
+      }));
+      return query;
+    });
+
+    await markContactSent(makeLead(), 'Vendedora');
+
+    expect(leadUpdates).toHaveLength(1);
+    expect(leadUpdates[0]).toMatchObject({
+      stage_id: 'stage-2',
+      status: '1º contato enviado',
+      indice_followup: 1,
+    });
+    expect(leadUpdates[0].ultimo_contato_em).toEqual(expect.any(String));
+    const scheduled = new Date(String(leadUpdates[0].proximo_followup_em));
+    const sentAt = new Date(String(leadUpdates[0].ultimo_contato_em));
+    expect(scheduled.getDate()).toBe(new Date(sentAt.getFullYear(), sentAt.getMonth(), sentAt.getDate() + 1).getDate());
+    expect(scheduled.getHours()).toBe(9);
+    expect(scheduled.getMinutes()).toBe(0);
+  });
+
   it('encerra a cadência e remove o próximo follow-up em etapa final', () => {
     expect(getFinalCadenceChanges()).toEqual({ etapa_cadencia: 'encerrado', proximo_followup_em: null });
   });
@@ -168,5 +247,11 @@ describe('helpers operacionais', () => {
     expect(migration).toContain('before insert or update of telefone');
     expect(migration).toContain('normalize_and_validate_lead_phone');
     expect(migration).not.toContain('add constraint telefone_tamanho_brasil');
+  });
+
+  it('corrige estados inválidos e horários legados no fuso comercial', () => {
+    const migration = readFileSync(new URL('../../supabase/migrations/202607090006_fix_invalid_followup_stage_states.sql', import.meta.url), 'utf8');
+    expect(migration).toContain("where slug in ('sem_resposta', 'primeiro_contato_enviado')");
+    expect(migration).toContain("created_at at time zone 'America/Sao_Paulo'");
   });
 });

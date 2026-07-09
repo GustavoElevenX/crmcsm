@@ -5,10 +5,11 @@ import { ptBR } from 'date-fns/locale';
 import type { FollowupTemplate, Lead, Profile } from '../types';
 import {
   applyTemplate, copyCurrentMessage, getCurrentFollowupTemplate, getWhatsAppUrl,
+  getOperationalStageLabel,
   markContactSent, markDegustationDone, markLeadResponded, moveLeadToStage,
   pauseLead, startPostDegustation,
 } from '../lib/crm';
-import { AlertBadge, DateText, FollowupDateText, OriginLabel, Temperature } from './common';
+import { AlertBadge, DateText, FollowupDateForLead, OriginLabel, Temperature } from './common';
 import { CommercialActionModal, type CommercialAction } from './CommercialActionModal';
 import { LeadForm } from './LeadForm';
 
@@ -75,9 +76,9 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
           <section className="detail-section">
             <div className="section-title"><h3>Status comercial</h3><AlertBadge lead={lead} /></div>
             <div className="status-strip">
-              <div><small>Etapa atual</small><strong>{lead.crm_stages?.name || lead.status}</strong></div>
+              <div><small>Etapa atual</small><strong>{getOperationalStageLabel(lead)}</strong></div>
               <div><small>Temperatura</small><Temperature value={lead.temperatura} /></div>
-              <div><small>Próximo follow-up</small><strong><FollowupDateText value={lead.proximo_followup_em} /></strong></div>
+              <div><small>Próximo follow-up</small><strong><FollowupDateForLead lead={lead} /></strong></div>
               <div><small>Responsável</small><strong>{lead.profiles?.full_name || 'Não definido'}</strong></div>
             </div>
           </section>

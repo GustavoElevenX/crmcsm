@@ -1,7 +1,7 @@
 import { format, isBefore, isSameDay, isTomorrow, startOfDay } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import type { AlertStatus, Lead } from '../types';
-import { getAlertStatus } from '../lib/crm';
+import { getAlertStatus, isFirstContactPending } from '../lib/crm';
 
 export const ALERT_LABELS: Record<AlertStatus, string> = {
   atrasado: 'Atrasado', novo_lead_parado: 'Novo lead parado', proposta_sem_retorno: 'Proposta sem retorno',
@@ -32,6 +32,22 @@ export function FollowupDateText({ value }: { value?: string | null }) {
     return <>Atrasado desde {format(date, 'dd/MM/yyyy', { locale: ptBR })}</>;
   }
   return <>{format(date, 'dd/MM/yyyy', { locale: ptBR })}</>;
+}
+
+export function FollowupDateForLead({ lead }: { lead: Lead }) {
+  if (!isFirstContactPending(lead)) {
+    return <FollowupDateText value={lead.proximo_followup_em} />;
+  }
+  if (!lead.proximo_followup_em) return <span className="muted">—</span>;
+
+  const date = new Date(lead.proximo_followup_em);
+  const now = new Date();
+  if (isSameDay(date, now)) return <>Hoje — 1º contato</>;
+  if (isTomorrow(date)) return <>Amanhã — 1º contato</>;
+  if (isBefore(startOfDay(date), startOfDay(now))) {
+    return <>1º contato pendente desde {format(date, 'dd/MM/yyyy', { locale: ptBR })}</>;
+  }
+  return <>{format(date, 'dd/MM/yyyy', { locale: ptBR })} — 1º contato</>;
 }
 
 export function OriginLabel({ origin }: { origin: Lead['origem'] }) {

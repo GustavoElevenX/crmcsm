@@ -4,9 +4,27 @@ import type { AlertStatus, FollowupTemplate, Lead, Stage } from '../types';
 
 type DatabaseError = { code?: string; message?: string; details?: string; hint?: string };
 export const BUSINESS_FOLLOWUP_HOUR = 9;
+export const BUSINESS_END_HOUR = 18;
 
 export function sameMomentAsCreatedAt(createdAt: string) {
   return new Date(createdAt).toISOString();
+}
+
+export function firstCommercialFollowupDate(createdAt: Date) {
+  const next = new Date(createdAt);
+
+  if (next.getHours() < BUSINESS_FOLLOWUP_HOUR) {
+    next.setHours(BUSINESS_FOLLOWUP_HOUR, 0, 0, 0);
+    return next.toISOString();
+  }
+
+  if (next.getHours() >= BUSINESS_END_HOUR) {
+    next.setDate(next.getDate() + 1);
+    next.setHours(BUSINESS_FOLLOWUP_HOUR, 0, 0, 0);
+    return next.toISOString();
+  }
+
+  return next.toISOString();
 }
 
 export function nextCommercialFollowupDate(base: Date, daysToAdd: number) {
@@ -126,6 +144,22 @@ export function getStageSlugAfterContact(cadence: FollowupTemplate['cadencia'], 
   return followupIndex === 0 ? 'primeiro_contato_enviado' : 'sem_resposta';
 }
 
+export function isFirstContactPending(lead: Lead) {
+  return lead.etapa_cadencia === 'pre_degustacao'
+    && lead.indice_followup === 0
+    && !lead.ultimo_contato_em;
+}
+
+export function getOperationalStageLabel(lead: Lead) {
+  if (isFirstContactPending(lead)) return 'Novo lead';
+  return lead.crm_stages?.name || lead.status;
+}
+
+export function getOperationalStageSlug(lead: Lead) {
+  if (isFirstContactPending(lead)) return 'novo_lead';
+  return lead.crm_stages?.slug || '';
+}
+
 export function getAlertStatus(lead: Lead): AlertStatus {
   if (lead.crm_stages?.is_final || lead.etapa_cadencia === 'encerrado') {
     return 'em_dia';
@@ -135,14 +169,16 @@ export function getAlertStatus(lead: Lead): AlertStatus {
   const next = lead.proximo_followup_em ? new Date(lead.proximo_followup_em) : null;
   const nextDay = next ? startOfDay(next) : null;
   const createdAt = new Date(lead.created_at);
-  const isNewLeadWithoutFirstContact =
-    lead.crm_stages?.slug === 'novo_lead'
-    && lead.etapa_cadencia === 'pre_degustacao'
-    && lead.indice_followup === 0
-    && !lead.ultimo_contato_em;
 
-  if (isNewLeadWithoutFirstContact) {
-    if (differenceInHours(now, createdAt) >= 2) return 'novo_lead_parado';
+  if (isFirstContactPending(lead)) {
+    if (!nextDay && isBefore(startOfDay(createdAt), todayStart)) return 'novo_lead_parado';
+    if (nextDay && isBefore(nextDay, todayStart)) return 'novo_lead_parado';
+    if (nextDay && !isSameDay(nextDay, todayStart)) return 'em_dia';
+
+    const waitingSince = isSameDay(createdAt, now) ? createdAt : next;
+    if (waitingSince && isSameDay(waitingSince, now) && differenceInHours(now, waitingSince) >= 2) {
+      return 'novo_lead_parado';
+    }
     return 'hoje';
   }
   if (nextDay) {
@@ -232,10 +268,13 @@ export async function markContactSent(lead: Lead, currentUserName?: string) {
     stageChanges.status = targetStage.name;
   }
   if (next) {
+    const nextFollowupAt = current.cadencia === 'pre_degustacao' && current.followup_index === 0
+      ? nextCommercialFollowupDate(now, 1)
+      : nextCommercialFollowupDate(now, next.offset_days - current.offset_days);
     await updateLead(lead.id, {
       ultimo_contato_em: now.toISOString(),
       indice_followup: nextIndex,
-      proximo_followup_em: nextCommercialFollowupDate(now, next.offset_days - current.offset_days),
+      proximo_followup_em: nextFollowupAt,
       ...stageChanges,
     });
   } else {
@@ -352,12 +391,12 @@ export async function createLead(payload: Record<string, unknown>) {
 
   const { data: inserted, error } = await supabase.from('leads').insert({
     ...sanitizedPayload, stage_id: stage.id, status: stage.name, owner_id: ownerId,
-    etapa_cadencia: 'pre_degustacao', indice_followup: 0,
+    etapa_cadencia: 'pre_degustacao', indice_followup: 0, ultimo_contato_em: null,
   }).select('id, created_at, proximo_followup_em').single();
   if (error) throw getFriendlyDatabaseError(error, 'Não foi possível cadastrar o lead. Tente novamente.');
   const { error: followupError } = await supabase
     .from('leads')
-    .update({ proximo_followup_em: sameMomentAsCreatedAt(inserted.created_at) })
+    .update({ proximo_followup_em: firstCommercialFollowupDate(new Date(inserted.created_at)) })
     .eq('id', inserted.id);
   if (followupError) throw getFriendlyDatabaseError(followupError, 'O lead foi criado, mas não foi possível preparar o primeiro follow-up.');
 }
