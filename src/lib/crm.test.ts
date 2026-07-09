@@ -162,4 +162,11 @@ describe('helpers operacionais', () => {
     const migration = readFileSync(new URL('../../supabase/migrations/202607090003_unique_meta_leads.sql', import.meta.url), 'utf8');
     expect(migration).toContain('create unique index if not exists idx_leads_meta_lead_id_unique');
   });
+
+  it('mantém dados legados editáveis e valida telefone somente quando alterado', () => {
+    const migration = readFileSync(new URL('../../supabase/migrations/202607090005_normalize_phone_storage.sql', import.meta.url), 'utf8');
+    expect(migration).toContain('before insert or update of telefone');
+    expect(migration).toContain('normalize_and_validate_lead_phone');
+    expect(migration).not.toContain('add constraint telefone_tamanho_brasil');
+  });
 });
