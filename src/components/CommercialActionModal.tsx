@@ -36,11 +36,20 @@ export function CommercialActionModal({
       }
       if (action === 'proposal') {
         const amount = optionalPositiveNumber(values.amount);
-        await markProposalSent(leadId, amount, String(values.quantity || '').trim(), String(values.note || '').trim());
+        const quantity = String(values.quantity || '').trim();
+        const note = String(values.note || '').trim();
+        if (amount === undefined && !quantity && !note) {
+          throw new Error('Informe pelo menos valor, quantidade sugerida ou uma observação sobre a proposta.');
+        }
+        await markProposalSent(leadId, amount, quantity, note);
       }
       if (action === 'close') {
         const amount = optionalPositiveNumber(values.amount);
-        await closeLead(leadId, amount, String(values.note || '').trim());
+        const note = String(values.note || '').trim();
+        if (amount === undefined && !note) {
+          throw new Error('Informe o valor do primeiro pedido ou uma observação.');
+        }
+        await closeLead(leadId, amount, note);
       }
       if (action === 'lose') {
         const reason = String(values.reason || '').trim();

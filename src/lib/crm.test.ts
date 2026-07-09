@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
-vi.mock('./supabase', () => ({ supabase: {} }));
+const { fromMock } = vi.hoisted(() => ({ fromMock: vi.fn() }));
+vi.mock('./supabase', () => ({ supabase: { from: fromMock } }));
 
-import { formatPhoneForWhatsApp, getAlertStatus, getFollowupLabel, getStageSlugAfterContact, hasAutomaticFollowup } from './crm';
+import {
+  BUSINESS_FOLLOWUP_HOUR, findActiveLeadsByPhone, formatPhoneForWhatsApp, getAlertStatus,
+  getFinalCadenceChanges, getFollowupLabel, getPostDegustationChanges, getPostProposalChanges,
+  getStageSlugAfterContact, hasAutomaticFollowup, nextCommercialFollowupDate, normalizePhone,
+} from './crm';
 import type { Lead } from '../types';
 
 function makeLead(overrides: Partial<Lead> = {}): Lead {
@@ -90,5 +96,51 @@ describe('helpers operacionais', () => {
     expect(hasAutomaticFollowup(makeLead())).toBe(true);
     expect(hasAutomaticFollowup(makeLead({ etapa_cadencia: 'manual' }))).toBe(false);
     expect(hasAutomaticFollowup(makeLead({ etapa_cadencia: 'encerrado' }))).toBe(false);
+  });
+
+  it('padroniza o próximo contato para 09:00 do dia comercial calculado', () => {
+    const base = new Date(2026, 6, 8, 21, 36);
+    const next = new Date(nextCommercialFollowupDate(base, 1));
+    expect(next.getDate()).toBe(9);
+    expect(next.getHours()).toBe(BUSINESS_FOLLOWUP_HOUR);
+    expect(next.getMinutes()).toBe(0);
+  });
+
+  it('encerra a cadência e remove o próximo follow-up em etapa final', () => {
+    expect(getFinalCadenceChanges()).toEqual({ etapa_cadencia: 'encerrado', proximo_followup_em: null });
+  });
+
+  it('inicia automaticamente as cadências pós-degustação e pós-proposta', () => {
+    const now = new Date(2026, 6, 8, 18, 30);
+    expect(getPostDegustationChanges(now)).toMatchObject({ etapa_cadencia: 'pos_degustacao', indice_followup: 0 });
+    const proposal = getPostProposalChanges(now);
+    expect(proposal.etapa_cadencia).toBe('pos_proposta');
+    expect(new Date(proposal.proximo_followup_em).getHours()).toBe(9);
+  });
+
+  it('normaliza telefone e encontra possíveis duplicidades ativas sem bloquear', async () => {
+    const query = {
+      eq: vi.fn(),
+      limit: vi.fn(),
+    };
+    query.eq.mockReturnValue(query);
+    query.limit.mockResolvedValue({
+      data: [
+        { id: '1', nome_responsavel: 'Ativo', empresa: 'Empresa', status: 'Novo lead', crm_stages: { name: 'Novo lead', slug: 'novo_lead', is_final: false } },
+        { id: '2', nome_responsavel: 'Final', empresa: 'Empresa', status: 'Fechado', crm_stages: { name: 'Fechado', slug: 'fechado', is_final: true } },
+      ],
+      error: null,
+    });
+    fromMock.mockReturnValue({ select: vi.fn().mockReturnValue(query) });
+    const result = await findActiveLeadsByPhone('(98) 99999-9999');
+    expect(normalizePhone('(98) 99999-9999')).toBe('98999999999');
+    expect(query.eq).toHaveBeenCalledWith('telefone', '98999999999');
+    expect(result).toHaveLength(1);
+    expect(result[0].nome_responsavel).toBe('Ativo');
+  });
+
+  it('mantém proteção única contra meta_lead_id no banco', () => {
+    const migration = readFileSync(new URL('../../supabase/migrations/202607090003_unique_meta_leads.sql', import.meta.url), 'utf8');
+    expect(migration).toContain('create unique index if not exists idx_leads_meta_lead_id_unique');
   });
 });

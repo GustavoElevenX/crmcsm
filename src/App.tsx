@@ -9,8 +9,8 @@ import { format, isAfter, isSameDay, isSameMonth, subDays } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
 import { supabase } from './lib/supabase';
 import {
-  copyCurrentMessage, getAlertStatus, getFollowupLabel, getWhatsAppUrl, hasAutomaticFollowup,
-  markContactSent, markDegustationDone, markLeadResponded, moveLeadToStage,
+  getAlertStatus, getFollowupLabel, getWhatsAppUrl,
+  markDegustationDone, markLeadResponded, moveLeadToStage,
 } from './lib/crm';
 import type { Lead, Profile, Stage, View } from './types';
 import { Login } from './components/Login';
@@ -22,7 +22,7 @@ import logoUrl from '../imagens/logo cms.PNG';
 const NAV: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard }, { id: 'kanban', label: 'Kanban', icon: Columns3 },
   { id: 'leads', label: 'Leads', icon: Users }, { id: 'today', label: 'Follow-ups de hoje', icon: CalendarCheck },
-  { id: 'late', label: 'Atrasados', icon: BellRing }, { id: 'degustations', label: 'Degustações', icon: Droplets },
+  { id: 'late', label: 'Atenção', icon: BellRing }, { id: 'degustations', label: 'Degustações', icon: Droplets },
   { id: 'proposals', label: 'Propostas', icon: FileText }, { id: 'reports', label: 'Relatórios simples', icon: BarChart3 },
 ];
 const ATTENTION_STATUSES = ['atrasado', 'novo_lead_parado', 'proposta_sem_retorno', 'lead_parado'];
@@ -86,7 +86,7 @@ export default function App() {
             <Page view={view} leads={leads} stages={stages} onOpen={setSelected} onChanged={loadData} />}
         </div>
       </main>
-      {formOpen && <LeadForm onClose={() => setFormOpen(false)} onSaved={loadData} />}
+      {formOpen && <LeadForm onClose={() => setFormOpen(false)} onSaved={loadData} onOpenExisting={(leadId) => setSelected(leads.find((lead) => lead.id === leadId) || null)} />}
       {selected && <LeadDrawer lead={selected} currentUser={profile} onClose={() => setSelected(null)} onChanged={loadData} />}
     </div>
   );
@@ -187,8 +187,7 @@ function LeadList({ leads, onOpen, onChanged, title, mode }: { leads: Lead[]; on
     </div>
     <div className="table-wrap"><table><thead><tr><th>Lead</th><th>Origem</th><th>Segmento</th><th>Produto</th><th>Bairro</th><th>Etapa</th><th>Follow-up atual</th><th>Próximo follow-up</th><th>Alerta</th>{isDegustationList && <><th>Data da degustação</th><th>Vendedor externo</th></>}<th>Responsável</th><th>Ações</th></tr></thead>
       <tbody>{shown.map((lead) => {
-        const canSend = hasAutomaticFollowup(lead);
-        return <tr key={lead.id}><td><button className="name-button" onClick={() => onOpen(lead)}><strong>{lead.nome_responsavel}</strong><span>{lead.empresa}<br />{lead.telefone}</span></button></td><td><OriginLabel origin={lead.origem} /></td><td>{lead.segmento || '—'}</td><td>{lead.produto_interesse || '—'}</td><td>{lead.bairro || '—'}</td><td><span className="stage-pill">{lead.crm_stages?.name || lead.status}</span><small><Temperature value={lead.temperatura} /></small></td><td>{getFollowupLabel(lead)}</td><td><FollowupDateText value={lead.proximo_followup_em} /></td><td><AlertBadge lead={lead} /></td>{isDegustationList && <><td><DateText value={lead.degustacao_realizada_em || lead.degustacao_agendada_em} withTime /></td><td>{lead.vendedor_externo || '—'}<small>{lead.degustacao_realizada_em ? 'Realizada' : 'Agendada'}</small></td></>}<td>{lead.profiles?.full_name || '—'}</td><td><div className="row-actions"><button onClick={() => onOpen(lead)}>Ver</button><button disabled={!canSend} title={canSend ? 'Copiar mensagem atual' : 'Não há mensagem automática para esta etapa.'} onClick={() => quickAction(() => copyCurrentMessage(lead), 'Mensagem copiada!')}>Copiar</button><a href={getWhatsAppUrl(lead)} target="_blank" rel="noreferrer">WhatsApp</a><button disabled={!canSend} title={canSend ? 'Marcar contato como enviado' : 'Não há mensagem automática para esta etapa.'} onClick={() => quickAction(() => markContactSent(lead), 'Contato registrado e próximo follow-up calculado.')}>Enviado</button><button onClick={() => quickAction(() => markLeadResponded(lead.id), 'Lead marcado como respondido.')}>Respondeu</button></div></td></tr>;
+        return <tr key={lead.id}><td><button className="name-button" onClick={() => onOpen(lead)}><strong>{lead.nome_responsavel}</strong><span>{lead.empresa}<br />{lead.telefone}</span></button></td><td><OriginLabel origin={lead.origem} /></td><td>{lead.segmento || '—'}</td><td>{lead.produto_interesse || '—'}</td><td>{lead.bairro || '—'}</td><td><span className="stage-pill">{lead.crm_stages?.name || lead.status}</span><small><Temperature value={lead.temperatura} /></small></td><td>{getFollowupLabel(lead)}</td><td><FollowupDateText value={lead.proximo_followup_em} /></td><td><AlertBadge lead={lead} /></td>{isDegustationList && <><td><DateText value={lead.degustacao_realizada_em || lead.degustacao_agendada_em} withTime /></td><td>{lead.vendedor_externo || '—'}<small>{lead.degustacao_realizada_em ? 'Realizada' : 'Agendada'}</small></td></>}<td>{lead.profiles?.full_name || '—'}</td><td><div className="row-actions"><button className="attend-action" onClick={() => onOpen(lead)}>Atender</button><a href={getWhatsAppUrl(lead)} target="_blank" rel="noreferrer">WhatsApp</a><button onClick={() => quickAction(() => markLeadResponded(lead.id), 'Lead marcado como respondido.')}>Respondeu</button></div></td></tr>;
       })}</tbody>
     </table>{!shown.length && <div className="empty">Nenhum lead encontrado com esses filtros.</div>}</div>
   </section>;

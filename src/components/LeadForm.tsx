@@ -1,14 +1,30 @@
 import { useState } from 'react';
 import { X } from 'lucide-react';
-import { createLead, updateLeadDetails } from '../lib/crm';
+import { createLead, findActiveLeadsByPhone, updateLeadDetails, type PossibleDuplicateLead } from '../lib/crm';
 import { LEAD_ORIGINS, type Lead, type LeadOrigin } from '../types';
 
-export function LeadForm({ onClose, onSaved, lead }: { onClose: () => void; onSaved: () => void; lead?: Lead }) {
+export function LeadForm({ onClose, onSaved, onOpenExisting, lead }: { onClose: () => void; onSaved: () => void; onOpenExisting?: (leadId: string) => void; lead?: Lead }) {
   const isEditing = Boolean(lead);
   const [origin, setOrigin] = useState<LeadOrigin>(lead?.origem || 'Trafego Pago - Formulario Meta Ads');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [duplicateLeads, setDuplicateLeads] = useState<PossibleDuplicateLead[]>([]);
+  const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null);
+
+  async function savePayload(payload: Record<string, unknown>) {
+    setSaving(true);
+    try {
+      if (lead) await updateLeadDetails(lead.id, payload);
+      else await createLead(payload);
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `Não foi possível ${isEditing ? 'salvar as alterações' : 'cadastrar o lead'}. Tente novamente.`);
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -34,7 +50,6 @@ export function LeadForm({ onClose, onSaved, lead }: { onClose: () => void; onSa
       return;
     }
 
-    setSaving(true);
     try {
       const payload = Object.fromEntries(
         Object.entries(values).map(([key, value]) => [key, value === '' ? null : value]),
@@ -53,9 +68,17 @@ export function LeadForm({ onClose, onSaved, lead }: { onClose: () => void; onSa
         origem: origin,
         temperatura: values.temperatura || 'morno',
       };
-      if (lead) await updateLeadDetails(lead.id, leadPayload);
-      else await createLead(leadPayload);
-      onSaved(); onClose();
+      if (!lead) {
+        setSaving(true);
+        const possibleDuplicates = await findActiveLeadsByPhone(phoneDigits);
+        setSaving(false);
+        if (possibleDuplicates.length) {
+          setDuplicateLeads(possibleDuplicates);
+          setPendingPayload(leadPayload);
+          return;
+        }
+      }
+      await savePayload(leadPayload);
     } catch (e) {
       setError(e instanceof Error ? e.message : `Não foi possível ${isEditing ? 'salvar as alterações' : 'cadastrar o lead'}. Tente novamente.`);
     } finally { setSaving(false); }
@@ -84,6 +107,12 @@ export function LeadForm({ onClose, onSaved, lead }: { onClose: () => void; onSa
           {isEditing && <label>Vendedor externo<input name="vendedor_externo" defaultValue={lead?.vendedor_externo || ''} /></label>}
           <label className="span-2">Observação<textarea name="observacao" defaultValue={lead?.observacao || ''} rows={3} /></label>
         </div>
+        {duplicateLeads.length > 0 && <div className="duplicate-warning">
+          <strong>Possível lead duplicado</strong>
+          <p>Já existe {duplicateLeads.length === 1 ? 'um lead ativo' : 'mais de um lead ativo'} com este telefone:</p>
+          {duplicateLeads.map((item) => <div className="duplicate-lead" key={item.id}><span><b>{item.nome_responsavel}</b> · {item.empresa} · {item.crm_stages?.name || item.status}</span>{onOpenExisting && <button type="button" onClick={() => { onClose(); onOpenExisting(item.id); }}>Abrir existente</button>}</div>)}
+          <button type="button" className="button duplicate-confirm" disabled={saving || !pendingPayload} onClick={() => pendingPayload && savePayload(pendingPayload)}>Cadastrar mesmo assim</button>
+        </div>}
         {error && <div className="notice error">{error}</div>}
         <div className="modal-actions"><button type="button" className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={saving}>{saving ? 'Salvando...' : isEditing ? 'Salvar alterações' : 'Cadastrar lead'}</button></div>
       </form>

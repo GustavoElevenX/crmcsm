@@ -12,6 +12,8 @@ CRM interno para cadastrar leads, acompanhar o funil comercial e organizar conta
 
 O projeto não usa Firebase e não envia mensagens automaticamente. Ele prepara o texto, copia para a área de transferência e abre o WhatsApp Web; o envio continua sendo manual.
 
+Crie todos os usuários em **Supabase > Authentication > Users**. Um usuário criado apenas no Firebase não funciona neste CRM, pois o login e as regras de acesso usam exclusivamente o Supabase Auth.
+
 ## Instalação
 
 1. Instale Node.js 18 ou superior.
@@ -22,6 +24,7 @@ O projeto não usa Firebase e não envia mensagens automaticamente. Ele prepara 
    - `supabase/migrations/202607090001_backfill_existing_profiles.sql`
    - `supabase/migrations/202607090002_fix_followup_dates.sql`
    - `supabase/migrations/202607090003_unique_meta_leads.sql`
+   - `supabase/migrations/202607090004_normalize_initial_followups.sql`
 
 4. Em **Authentication > Users**, crie o primeiro usuário com e-mail e senha.
 5. Copie `.env.example` para `.env` e preencha as credenciais públicas do projeto:

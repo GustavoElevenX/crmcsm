@@ -18,15 +18,38 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
   const [toast, setToast] = useState('');
   const [commercialAction, setCommercialAction] = useState<CommercialAction | null>(null);
   const [editing, setEditing] = useState(false);
+  const [messageCopied, setMessageCopied] = useState(false);
   const userName = currentUser?.full_name || undefined;
 
-  useEffect(() => { getCurrentFollowupTemplate(lead).then(setTemplate).catch(() => setTemplate(null)); }, [lead]);
+  useEffect(() => {
+    setMessageCopied(false);
+    getCurrentFollowupTemplate(lead).then(setTemplate).catch(() => setTemplate(null));
+  }, [lead.id, lead.etapa_cadencia, lead.indice_followup]);
 
   async function act(label: string, fn: () => Promise<void>) {
     setBusy(label);
-    try { await fn(); setToast('Alteração salva.'); onChanged(); }
-    catch (e) { setToast(e instanceof Error ? e.message : 'Algo deu errado.'); }
+    try { await fn(); setToast('Alteração salva.'); onChanged(); return true; }
+    catch (e) { setToast(e instanceof Error ? e.message : 'Algo deu errado.'); return false; }
     finally { setBusy(''); setTimeout(() => setToast(''), 2500); }
+  }
+
+  async function handleCopy() {
+    setBusy('copy');
+    try {
+      await copyCurrentMessage(lead, userName);
+      setMessageCopied(true);
+      setToast('Mensagem copiada! Agora abra o WhatsApp, cole e envie.');
+    } catch (e) {
+      setToast(e instanceof Error ? e.message : 'Não foi possível copiar a mensagem.');
+    } finally {
+      setBusy('');
+      setTimeout(() => setToast(''), 3500);
+    }
+  }
+
+  async function handleSent() {
+    const saved = await act('sent', () => markContactSent(lead, userName));
+    if (saved) setMessageCopied(false);
   }
 
   const message = template ? applyTemplate(template.template, lead, userName) : '';
@@ -63,9 +86,9 @@ export function LeadDrawer({ lead, currentUser, onClose, onChanged }: { lead: Le
             {message ? <div className="message-preview">{message}</div> : <div className="empty-inline">Não há mensagem automática para esta etapa.</div>}
             <p className="instruction"><MessageCircle size={16} />Copie a mensagem, cole no WhatsApp Web e depois clique em “Marcar contato como enviado”.</p>
             <div className="action-row">
-              <button className="button primary" disabled={!message || !!busy} onClick={() => act('copy', async () => { await copyCurrentMessage(lead, userName); setToast('Mensagem copiada!'); })}><Clipboard size={17} />Copiar mensagem</button>
+              <button className="button primary" disabled={!message || !!busy} onClick={handleCopy}><Clipboard size={17} />{messageCopied ? 'Mensagem copiada' : 'Copiar mensagem'}</button>
               <a className="button whatsapp" href={getWhatsAppUrl(lead)} target="_blank" rel="noreferrer"><ExternalLink size={17} />Abrir WhatsApp Web</a>
-              <button className="button secondary" disabled={!template || !!busy} onClick={() => act('sent', () => markContactSent(lead, userName))}>Marcar contato enviado</button>
+              <button className="button secondary" title={messageCopied ? 'Confirme somente depois de enviar no WhatsApp' : 'Copie a mensagem antes de registrar o envio'} disabled={!template || !messageCopied || !!busy} onClick={handleSent}>Sim, já enviei</button>
             </div>
           </section>
           <section className="detail-section">
