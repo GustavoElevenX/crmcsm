@@ -26,6 +26,8 @@ Crie todos os usuários em **Supabase > Authentication > Users**. Um usuário cr
    - `supabase/migrations/202607090003_unique_meta_leads.sql`
    - `supabase/migrations/202607090004_normalize_initial_followups.sql`
    - `supabase/migrations/202607090005_normalize_phone_storage.sql`
+   - `supabase/migrations/202607090006_fix_invalid_followup_stage_states.sql`
+   - `supabase/migrations/202607090007_force_initial_followup_state.sql`
 
 4. Em **Authentication > Users**, crie o primeiro usuário com e-mail e senha.
 5. Copie `.env.example` para `.env` e preencha as credenciais públicas do projeto:
@@ -59,7 +61,7 @@ npm run dev
 
 ## Regras principais
 
-- Lead novo recebe follow-up D0 usando o relógio do Supabase.
+- Lead novo recebe o primeiro contato no horário comercial: às 09h quando criado antes do expediente, imediatamente entre 09h e 18h, ou às 09h do dia seguinte quando criado depois do expediente.
 - Follow-ups são classificados pelo dia comercial, não pelo minuto.
 - O primeiro envio move para `1º contato enviado`; os seguintes, sem resposta, movem para `Sem resposta`.
 - Degustação realizada inicia automaticamente a cadência pós-degustação.

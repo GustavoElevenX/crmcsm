@@ -146,8 +146,7 @@ export function getStageSlugAfterContact(cadence: FollowupTemplate['cadencia'], 
 
 export function isFirstContactPending(lead: Lead) {
   return lead.etapa_cadencia === 'pre_degustacao'
-    && lead.indice_followup === 0
-    && !lead.ultimo_contato_em;
+    && lead.indice_followup === 0;
 }
 
 export function getOperationalStageLabel(lead: Lead) {

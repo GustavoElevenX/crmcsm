@@ -7,7 +7,7 @@ vi.mock('./supabase', () => ({ supabase: { from: fromMock, auth: { getUser: getU
 import {
   BUSINESS_FOLLOWUP_HOUR, findActiveLeadsByPhone, firstCommercialFollowupDate, formatPhoneForWhatsApp, getAlertStatus,
   getFinalCadenceChanges, getFollowupLabel, getPostDegustationChanges, getPostProposalChanges,
-  getOperationalStageLabel, getStageSlugAfterContact, hasAutomaticFollowup, isFirstContactPending,
+  getOperationalStageLabel, getOperationalStageSlug, getStageSlugAfterContact, hasAutomaticFollowup, isFirstContactPending,
   markContactSent, nextCommercialFollowupDate, normalizePhone, normalizePhoneForStorage,
 } from './crm';
 import type { Lead } from '../types';
@@ -154,6 +154,17 @@ describe('helpers operacionais', () => {
     expect(getOperationalStageLabel(lead)).toBe('Novo lead');
   });
 
+  it('trata qualquer pré-degustação índice 0 como primeiro contato pendente, mesmo com último contato legado', () => {
+    const lead = makeLead({
+      ultimo_contato_em: new Date().toISOString(),
+      crm_stages: { id: 'stage-3', name: 'Sem resposta', slug: 'sem_resposta', position: 3, is_final: false },
+    });
+
+    expect(isFirstContactPending(lead)).toBe(true);
+    expect(getOperationalStageLabel(lead)).toBe('Novo lead');
+    expect(getOperationalStageSlug(lead)).toBe('novo_lead');
+  });
+
   it('avança o primeiro contato para D+1 às 09h e para a etapa correta', async () => {
     const current = {
       id: 'template-1', name: '1º contato', cadencia: 'pre_degustacao' as const,
@@ -253,5 +264,16 @@ describe('helpers operacionais', () => {
     const migration = readFileSync(new URL('../../supabase/migrations/202607090006_fix_invalid_followup_stage_states.sql', import.meta.url), 'utf8');
     expect(migration).toContain("where slug in ('sem_resposta', 'primeiro_contato_enviado')");
     expect(migration).toContain("created_at at time zone 'America/Sao_Paulo'");
+  });
+
+  it('inclui migration para forçar leads índice 0 de volta para Novo lead', () => {
+    const migration = readFileSync(
+      new URL('../../supabase/migrations/202607090007_force_initial_followup_state.sql', import.meta.url),
+      'utf8',
+    );
+
+    expect(migration).toContain("l.etapa_cadencia = 'pre_degustacao'");
+    expect(migration).toContain('l.indice_followup = 0');
+    expect(migration).toContain("s.slug = 'novo_lead'");
   });
 });
